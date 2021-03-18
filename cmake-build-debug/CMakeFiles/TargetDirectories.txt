@@ -1,0 +1,4 @@
+/home/mateusz/Desktop/Avitex/cmake-build-debug/CMakeFiles/rebuild_cache.dir
+/home/mateusz/Desktop/Avitex/cmake-build-debug/CMakeFiles/edit_cache.dir
+/home/mateusz/Desktop/Avitex/cmake-build-debug/CMakeFiles/Avitex_lib.dir
+/home/mateusz/Desktop/Avitex/cmake-build-debug/CMakeFiles/Avitex.dir

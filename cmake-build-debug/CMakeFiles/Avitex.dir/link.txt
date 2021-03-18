@@ -1,0 +1,1 @@
+/usr/bin/c++  -g   CMakeFiles/Avitex.dir/main.cpp.o  -o Avitex 
