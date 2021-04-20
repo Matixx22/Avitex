@@ -4,6 +4,8 @@
 #include <vector>
 #include <unistd.h>
 #include <ftw.h>
+#include <sys/wait.h>
+#include <sys/types.h>
 
 #include "lib/Utils.cpp"
 
@@ -25,11 +27,33 @@ using namespace std;
 //    }
 //}
 
-int scan() {
-    cout << "Scanning..." << endl;
+void scan(const string& type, const string& flag, const string& path) {
+    //cout << "Scanning..." << endl;
     // Execute daemon heartbeat, where your recurring activity occurs
     // Vector of all files in given directory
-    vector<string> files = split(exec("find /home/mateusz/Desktop -type f -print0 | xargs -0 ls"), '\n');
+    string command;
+
+    if (type == "file")
+        command = "find " + path + " -type f -print0 | xargs -0 ls";
+    else if (type == "dir") {
+        if (flag == "-r")
+            // Recursive
+            command = "find " + path + " -type f -print0 | xargs -0 ls";
+        else if (flag == "-l")
+            // Linear
+            command = "find " + path + " -maxdepth 1 -type f -print0 | xargs -0 ls";
+        else {
+            cerr << "Wrong flag. Type -r to scan recursively or -l to scan linearly" << endl;
+            exit(1);
+        }
+    } else {
+        cerr << "Wrong scan type. Type file to scan certain file or dir to scan given directory" << endl;
+        exit(1);
+    }
+
+
+    vector<string> files = split(exec(command.c_str()), '\n');
+
     ifstream virus_signatures;
 
     // TODO: change to some dir with program (probably change child working dir)
@@ -38,6 +62,7 @@ int scan() {
     if (virus_signatures.is_open()) {
         string line;
         bool virus_found = false;
+        vector<string> viruses;
         while (getline(virus_signatures, line)) {
             // Compares hashes from files found by find command with hashes in virus_signatures
             for (auto &i : files) {
@@ -50,6 +75,8 @@ int scan() {
                 if (line == file_hash) {
                     virus_found = true;
                     syslog(LOG_ALERT, "%s", ("Virus found: " + i).c_str());
+                    cout << "Virus found: " << i << endl;
+                    viruses.push_back(i);
                 }
 
             }
@@ -61,11 +88,12 @@ int scan() {
         //std::cout << "Scan finished. Results can be found in /var/sys/syslog." << std::endl;
 
         // If return 1 than daemon run once
-        return 1;
+        //exit(0);
+        //return viruses;
 
     } else {
         syslog(LOG_ERR, "Cannot open signatures file");
-        return 1;
+        exit(1);
     }
 }
 
@@ -94,17 +122,27 @@ int main() {
 
     // TODO: Implement some input handling (display statistics, start scanning, ...)
     while (true) {
-        string a;
+        string option;
         cout << "Type 'q' to exit and 'scan' to scan: ";
-        cin >> a;
-        if (a == "q") {
+        cin >> option;
+        cin.ignore();
+        if (option == "q") {
             cout << "Press any key to quit" << endl;
-            return 0;
+            exit(0);
         }
+        cout << "Type 'file <absolute_path_to_file>' to scan certain file or dir -r/l <absolute_path_to_dir>"
+                "to scan given directory recursively (-r) or linearly (-l)" << endl;
+
+        string scan_option;
+        getline(cin, scan_option);
+        vector<string> scan_parameters = split(scan_option, ' ');
+        string scan_type = scan_parameters[0];
+        string flag = scan_parameters[1];
+        string path = scan_parameters[2];
 
         //std::cout << "Your input: " + a << std::endl;
 
-        if (a == "scan") {
+        if (option == "scan") {
             pid_t pid = fork();
 
             /* Set new file permissions */
@@ -118,14 +156,18 @@ int main() {
                     exit(1);
                 }
                 case 0: {
-                    scan();
+                    scan(scan_type, flag, path);
+
                     exit(0);
                 }
                 default: {
-                    cout << "Scan started." << std::endl;
+                    cout << "Scanning..." << std::endl;
                 }
             }
+            int status;
+            waitpid(pid, &status, 0);
         }
+        //exit(0);
 
         //std::cout << "Scan finished. Results can be found in /var/sys/syslog." << std::endl;
 
