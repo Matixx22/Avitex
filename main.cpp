@@ -3,16 +3,19 @@
 #include <string>
 #include <vector>
 #include <cstring>
+#include <filesystem>
 #include <unistd.h>
 #include <ftw.h>
 #include <sys/wait.h>
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
+#include <sys/syslog.h>
 
 #include "lib/Utils.cpp"
 
 using namespace std;
+namespace fs = filesystem;
 
 #define PORT 8080
 
@@ -32,43 +35,51 @@ using namespace std;
 //    }
 //}
 
-void scan(const string& type, const string& flag, const string& path) {
+void quarantine(const string& virus_path) {
+    string quarantine_path = fs::current_path();
+    quarantine_path += "/quarantine";
+    if (!fs::exists(quarantine_path)) {
+        fs::create_directory(quarantine_path);
+        fs::permissions(quarantine_path, fs::perms::owner_write);
+    }
+
+    //fs::rename(virus_path, quarantine_path);
+    string cmd = "mv " + virus_path + " " + quarantine_path;
+    //system(cmd.c_str());
+}
+
+void scan(const string& flag, const string& path, int socket) {
 
     // TODO: Validate path (regex?)
 
     // Vector of all files in given directory
     string command;
+    string output;
+    char tmp[4] = {0};
 
-    if (type == "file")
+    if (flag == "-dr" || flag == "-f")
+        // Recursive
         command = "find " + path + " -type f -print0 | xargs -0 ls";
-    else if (type == "dir") {
-        if (flag == "-r")
-            // Recursive
-            command = "find " + path + " -type f -print0 | xargs -0 ls";
-        else if (flag == "-l")
-            // Linear
-            command = "find " + path + " -maxdepth 1 -type f -print0 | xargs -0 ls";
-        else {
-            cerr << "Wrong flag. Type '-r' to scan recursively or '-l' to scan linearly" << endl;
-            return;
-        }
-    } else {
-        cerr << "Wrong scan type. Type 'file' to scan certain file or 'dir' to scan given directory" << endl;
+    else if (flag == "-dl")
+        // Linear
+        command = "find " + path + " -maxdepth 1 -type f -print0 | xargs -0 ls";
+    else {
+        cerr << "Wrong flag. Type '-r' to scan recursively or '-l' to scan linearly" << endl;
         return;
     }
-
 
     vector<string> files = split(exec(command.c_str()), '\n');
 
     ifstream virus_signatures;
 
     // TODO: change to some dir with program (probably change child working dir)
-    virus_signatures.open("/home/mateusz/Desktop/Avitex/v_signatures.txt");
+    string working_dir = fs::current_path();
+    virus_signatures.open(working_dir + "/v_signatures.txt");
 
     if (virus_signatures.is_open()) {
         string line;
         bool virus_found = false;
-        vector<string> viruses;
+        //vector<string> viruses;
         while (getline(virus_signatures, line)) {
             // Compares hashes from files found by find command with hashes in virus_signatures
             for (auto &i : files) {
@@ -81,15 +92,19 @@ void scan(const string& type, const string& flag, const string& path) {
                 if (line == file_hash) {
                     virus_found = true;
                     syslog(LOG_ALERT, "%s", ("Virus found: " + i).c_str());
-                    cout << "Virus found: " << i << endl;
-                    viruses.push_back(i);
+                    string msg = "Virus found: " + i + "\n";
+                    recv(socket, tmp, sizeof(tmp), 0);
+                    send(socket, msg.c_str(), msg.size(), 0);
+                    quarantine(i);
                 }
 
             }
         }
         if (!virus_found) {
             syslog(LOG_NOTICE, "No viruses :)");
-            cout << "No viruses :)" << endl;
+            string msg = "No viruses :)\n";
+            recv(socket, tmp, sizeof(tmp), 0);
+            send(socket, msg.c_str(), msg.size(), 0);
         }
         virus_signatures.close();
 
@@ -99,51 +114,13 @@ void scan(const string& type, const string& flag, const string& path) {
         //return viruses;
 
     } else {
-        syslog(LOG_ERR, "Cannot open signatures file");
+        recv(socket, tmp, sizeof(tmp), 0);
+        send(socket, "Error occurred during opening virus signatures file\n", 52, 0);
         return;
     }
 }
 
-vector<string> get_input() {
-    string scan_option;
-    vector<string> input_parameters;
-    vector<string> scan_parameters;
-    getline(cin, scan_option);
-
-    input_parameters = split(scan_option, ' ');
-    if (input_parameters.size() == 2) {
-        scan_parameters.push_back(input_parameters[0]);
-        scan_parameters.emplace_back("-l");
-        scan_parameters.push_back(input_parameters[1]);
-    } else if (input_parameters.size() == 3) {
-        scan_parameters.push_back(input_parameters[0]);
-        scan_parameters.push_back(input_parameters[1]);
-        scan_parameters.push_back(input_parameters[2]);
-    } else {
-        cerr << "Wrong input!" << endl;
-    }
-    return scan_parameters;
-}
-
 int main() {
-
-    string greetings = "               _ _            \n"
-                       "     /\\       (_) |           \n"
-                       "    /  \\__   ___| |_ _____  __\n"
-                       "   / /\\ \\ \\ / / | __/ _ \\ \\/ /\n"
-                       "  / ____ \\ V /| | ||  __/>  < \n"
-                       " /_/    \\_\\_/ |_|\\__\\___/_/\\_\\\n\n"
-                       "  ___              _    _                  _       _   _     _             \n"
-                       " | __| _ ___ ___  | |  (_)_ _ _  ___ __   /_\\  _ _| |_(_)_ _(_)_ _ _  _ ___\n"
-                       " | _| '_/ -_) -_) | |__| | ' \\ || \\ \\ /  / _ \\| ' \\  _| \\ V / | '_| || (_-<\n"
-                       " |_||_| \\___\\___| |____|_|_||_\\_,_/_\\_\\ /_/ \\_\\_||_\\__|_|\\_/|_|_|  \\_,_/__/\n"
-                       "                                                                           \n";
-    string option_menu = "Type 'file <absolute_path_to_file>' to scan certain file\n"
-                         "Type 'dir -r/-l <absolute_path_to_dir>' to scan given directory\n"
-                         "(-r - recursively, -l - linearly)\n"
-                         "Type 'stats' to get scanning statistics\n"
-                         "Type 'exit' to exit the program\n";
-
     // INIT SERVER
     int server_fd, new_socket;
     long valread;
@@ -151,6 +128,7 @@ int main() {
     int opt = 1;
     int addrlen = sizeof(address);
     char user_input[1024] = {0};
+    char tmp[4] = {0};
 
     // Creating socket file descriptor
     if ((server_fd = socket(AF_INET, SOCK_STREAM, 0)) == 0) {
@@ -196,16 +174,12 @@ int main() {
             exit(EXIT_FAILURE);
         }
 
-        //send(new_socket, (greetings + option_menu).c_str(), (greetings+option_menu).size(), 0 );
-        //printf("Greetings sent\n");
-
         valread = recv(new_socket, user_input, 1024, 0);
         if (valread < 0) {
             perror("Receive error");
         } else if (valread == 0) {
             cout << "No user input" << endl;
         } else {
-            printf("User input: %s\n", user_input);
 
             vector<string> options;
             string flag = {0};
@@ -220,23 +194,39 @@ int main() {
                 path = options[1];
             }
 
-            if (flag == "-s") {
-                send(new_socket, "Last scan statistics", 30, 0);
-            } else if (flag == "-sall") {
-                send(new_socket, "Scanning statistics", 30, 0);
-            } else if (flag == "-f") {
-                send(new_socket, "Scan file", 30, 0);
-            } else if (flag == "-dr") {
-                send(new_socket, "Scan dir rec", 30, 0);
-            } else if (flag == "-dl") {
-                send(new_socket, "Scan dir lin", 30, 0);
-            } else {
-                send(new_socket, "Something went wrong", 30, 0);
-            }
+            string scan_output;
 
-            if (strncmp(user_input, "scan", strlen(user_input)) == 0) {
-                scan("dir", "-r", "/home/mateusz/Desktop");
+            if (flag == "-s") {
+                // TODO: Not implemented yet
+                send(new_socket, "Last scan statistics\n", 30, 0);
+                //recv(new_socket, tmp, strlen(tmp), 0);
+            } else if (flag == "-sall") {
+                // TODO: Not implemented yet
+                send(new_socket, "Scanning statistics\n", 30, 0);
+                //recv(new_socket, tmp, strlen(tmp), 0);
+            } else if (flag == "-f") {
+                send(new_socket, "Scanning file...\n", 17, 0);
+                //recv(new_socket, tmp, strlen(tmp), 0);
+                scan(flag, path, new_socket);
+            } else if (flag == "-dr") {
+                send(new_socket, "Scanning directory recursively...\n", 34, 0);
+                //recv(new_socket, tmp, strlen(tmp), 0);
+                scan(flag, path, new_socket);
+            } else if (flag == "-dl") {
+                send(new_socket, "Scanning directory linearly...\n", 31, 0);
+                //recv(new_socket, tmp, strlen(tmp), 0);
+                scan(flag, path, new_socket);
+            } else {
+                send(new_socket, "Something went wrong\n", 21, 0);
+                //recv(new_socket, tmp, strlen(tmp), 0);
             }
+            recv(new_socket, tmp, sizeof(tmp), 0);
+            send(new_socket, "Scan finished", 13, 0);
+
+
+//            if (strncmp(user_input, "scan", strlen(user_input)) == 0) {
+//                scan("dir", "-r", "/home/mateusz/Desktop");
+//            }
 
             memset(user_input, 0, strlen(user_input));
         }
