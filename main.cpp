@@ -5,35 +5,53 @@
 #include <cstring>
 #include <filesystem>
 #include <unistd.h>
-#include <ftw.h>
-#include <sys/wait.h>
-#include <sys/types.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <sys/syslog.h>
-
-#include "lib/Utils.cpp"
 
 using namespace std;
 namespace fs = filesystem;
 
 #define PORT 8080
 
-//void cache_hashes(const std::string& dir) {
-//    std::ofstream cache;
-//    cache.open("md5sums.md5");
-//
-//    if (cache.is_open()) {
-//        std::string cmd = "find " + dir + " -type f -exec md5sum {} + > md5sums.md5";
-//        std::vector<std::string> hashes = split(exec(cmd.c_str()), '\n');
-//        for (auto &hash : hashes)  {
-//            cache << hash << '\n';
-//        }
-//        cache.close();
-//    } else {
-//        std::cout << "Cannot open cache file" << std::endl;
-//    }
-//}
+string exec(const char *cmd) {
+    array<char, 128> buffer{};
+    string result;
+    unique_ptr<FILE, decltype(&pclose)> pipe(popen(cmd, "r"), pclose);
+    if (!pipe) {
+        throw runtime_error("popen() failed!");
+    }
+    while (fgets(buffer.data(), buffer.size(), pipe.get()) != nullptr) {
+        result += buffer.data();
+    }
+    return result;
+}
+
+vector<string> split(const string &s, char delimiter) {
+    vector<string> tokens;
+    string token;
+    istringstream tokenStream(s);
+    while (getline(tokenStream, token, delimiter)) {
+        tokens.push_back(token);
+    }
+    return tokens;
+}
+
+void cache_hashes(const string& dir) {
+    ofstream cache;
+    cache.open("md5sums.md5");
+
+    if (cache.is_open()) {
+        string cmd = "find " + dir + " -type f -exec md5sum {} + > md5sums.md5";
+        vector<std::string> hashes = split(exec(cmd.c_str()), '\n');
+        for (auto &hash : hashes)  {
+            cache << hash << '\n';
+        }
+        cache.close();
+    } else {
+        cout << "Cannot open cache file" << endl;
+    }
+}
 
 void quarantine(const string& virus_path) {
     string quarantine_path = fs::current_path();
@@ -43,16 +61,11 @@ void quarantine(const string& virus_path) {
         fs::permissions(quarantine_path, fs::perms::owner_write);
     }
 
-    //fs::rename(virus_path, quarantine_path);
     string cmd = "mv " + virus_path + " " + quarantine_path;
-    //system(cmd.c_str());
+    system(cmd.c_str());
 }
 
 void scan(const string& flag, const string& path, int socket) {
-
-    // TODO: Validate path (regex?)
-
-    // Vector of all files in given directory
     string command;
     string output;
     char tmp[4] = {0};
@@ -72,14 +85,13 @@ void scan(const string& flag, const string& path, int socket) {
 
     ifstream virus_signatures;
 
-    // TODO: change to some dir with program (probably change child working dir)
     string working_dir = fs::current_path();
     virus_signatures.open(working_dir + "/v_signatures.txt");
 
     if (virus_signatures.is_open()) {
         string line;
         bool virus_found = false;
-        //vector<string> viruses;
+
         while (getline(virus_signatures, line)) {
             // Compares hashes from files found by find command with hashes in virus_signatures
             for (auto &i : files) {
@@ -89,6 +101,9 @@ void scan(const string& flag, const string& path, int socket) {
                 string file_hash = exec(md5_command.c_str());
                 file_hash.pop_back(); // Remove eol char
 
+                if (file.starts_with(working_dir + "/quarantine"))
+                    continue;
+
                 if (line == file_hash) {
                     virus_found = true;
                     syslog(LOG_ALERT, "%s", ("Virus found: " + i).c_str());
@@ -97,7 +112,6 @@ void scan(const string& flag, const string& path, int socket) {
                     send(socket, msg.c_str(), msg.size(), 0);
                     quarantine(i);
                 }
-
             }
         }
         if (!virus_found) {
@@ -107,12 +121,6 @@ void scan(const string& flag, const string& path, int socket) {
             send(socket, msg.c_str(), msg.size(), 0);
         }
         virus_signatures.close();
-
-
-        // If return 1 than daemon run once
-        //exit(0);
-        //return viruses;
-
     } else {
         recv(socket, tmp, sizeof(tmp), 0);
         send(socket, "Error occurred during opening virus signatures file\n", 52, 0);
@@ -156,20 +164,9 @@ int main() {
         exit(EXIT_FAILURE);
     }
 
-    /*
-     * TODO:
-     *  - cache hashes to the file during first run (maybe divide into smaller files)
-     *  - compare differed hash functions times
-     */
-
-    // TODO: socket w programie, pipe
-
-    // TODO: Implement some input handling (display statistics, start scanning, ...)
-
-
     while (true) {
 
-        if ((new_socket = accept(server_fd, (struct sockaddr *)&address, (socklen_t*)&addrlen))<  0) {
+        if ((new_socket = accept(server_fd, (struct sockaddr *) &address, (socklen_t *) &addrlen)) < 0) {
             perror("accept");
             exit(EXIT_FAILURE);
         }
@@ -199,84 +196,25 @@ int main() {
             if (flag == "-s") {
                 // TODO: Not implemented yet
                 send(new_socket, "Last scan statistics\n", 30, 0);
-                //recv(new_socket, tmp, strlen(tmp), 0);
             } else if (flag == "-sall") {
                 // TODO: Not implemented yet
                 send(new_socket, "Scanning statistics\n", 30, 0);
-                //recv(new_socket, tmp, strlen(tmp), 0);
             } else if (flag == "-f") {
                 send(new_socket, "Scanning file...\n", 17, 0);
-                //recv(new_socket, tmp, strlen(tmp), 0);
                 scan(flag, path, new_socket);
             } else if (flag == "-dr") {
                 send(new_socket, "Scanning directory recursively...\n", 34, 0);
-                //recv(new_socket, tmp, strlen(tmp), 0);
                 scan(flag, path, new_socket);
             } else if (flag == "-dl") {
                 send(new_socket, "Scanning directory linearly...\n", 31, 0);
-                //recv(new_socket, tmp, strlen(tmp), 0);
                 scan(flag, path, new_socket);
             } else {
                 send(new_socket, "Something went wrong\n", 21, 0);
-                //recv(new_socket, tmp, strlen(tmp), 0);
             }
             recv(new_socket, tmp, sizeof(tmp), 0);
             send(new_socket, "Scan finished", 13, 0);
 
-
-//            if (strncmp(user_input, "scan", strlen(user_input)) == 0) {
-//                scan("dir", "-r", "/home/mateusz/Desktop");
-//            }
-
             memset(user_input, 0, strlen(user_input));
         }
-        //shutdown(new_socket, SHUT_RDWR);
-//        string option;
-//        cout << "Type 'scan' to chose scanning options\n"
-//                "Type 'stats' to get statistics about scanning\n"
-//                "Press quickly 3 times escape or exit a terminal to leave\n"
-//                "command: ";
-//        cin >> option;
-//        cin.ignore();
-//
-//        if (option == "scan") {
-//            vector<string> scan_options = get_input();
-//            string scan_type = scan_options[0];
-//            string flag = scan_options[1];
-//            string path = scan_options[2];
-//
-//            pid_t pid = fork();
-//
-//            /* Set new file permissions */
-//            umask(0);
-//            /* Open the log file */
-//            openlog("Avitex", LOG_PID, LOG_DAEMON);
-//
-//            switch (pid) {
-//                case -1: {
-//                    printf("Fork error! Scan aborted.");
-//                    exit(1);
-//                }
-//                case 0: {
-//                    scan(scan_type, flag, path);
-//
-//                    exit(0);
-//                }
-//                default: {
-//                    cout << "Scanning..." << std::endl;
-//                }
-//            }
-//            int status;
-//            waitpid(pid, &status, 0);
-//        }
-
-
     }
-
-    // Close system logs for the child process
-    syslog(LOG_NOTICE, "Stopping Avitex");
-    closelog();
-
-    // Terminate the child process when the daemon completes
-    exit(EXIT_SUCCESS);
 }
